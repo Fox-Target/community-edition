@@ -24,9 +24,9 @@ env:
   secret:
     - SECRET_KEY_BASE
 
-readiness_delay: 500
-deploy_timeout: 600
-drain_timeout: 40
+readiness_delay: 20
+deploy_timeout: 20
+drain_timeout: 10
 
 accessories:
   db:
