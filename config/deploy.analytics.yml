@@ -25,7 +25,7 @@ env:
     - SECRET_KEY_BASE
 
 readiness_delay: 20
-deploy_timeout: 60
+deploy_timeout: 120
 drain_timeout: 40
 
 accessories:
