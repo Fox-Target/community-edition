@@ -49,7 +49,7 @@ accessories:
     env:
       secret:
         - CLICKHOUSE_PASSWORD
-        - CLICKHOUSE_SKIP_USER_SETUP=1
+        - CLICKHOUSE_SKIP_USER_SETUP: 1
     directories:
       - event-data:/var/lib/clickhouse
       - event-logs:/var/log/clickhouse-server
