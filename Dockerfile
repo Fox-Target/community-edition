@@ -1,1 +1,1 @@
-FROM ghcr.io/plausible/community-edition:v2.1.4
+FROM ghcr.io/plausible/community-edition:v3.0.1

@@ -43,12 +43,13 @@ accessories:
     directories:
       - db-data:/var/lib/postgresql/data
   events-db:
-    image: clickhouse/clickhouse-server:24.3.3.102-alpine
+    image: clickhouse/clickhouse-server:24.12-alpine
     host: akira
     port: "127.0.0.1:8123:8123"
     env:
       secret:
         - CLICKHOUSE_PASSWORD
+        - CLICKHOUSE_SKIP_USER_SETUP=1
     directories:
       - event-data:/var/lib/clickhouse
       - event-logs:/var/log/clickhouse-server
