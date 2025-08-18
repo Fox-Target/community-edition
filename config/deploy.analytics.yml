@@ -1,0 +1,56 @@
+require_destination: true
+
+service: plausible-analytics
+image: fox-target/plausible-analytics
+
+servers:
+  web:
+    hosts:
+      - akira
+    cmd: sh -c "/entrypoint.sh db createdb && /entrypoint.sh db migrate && /entrypoint.sh run"
+ssh:
+  user: deploy
+
+proxy:
+  ssl: true
+  host: analytics.foxtarget.com
+  app_port: 8000
+
+env:
+  clear:
+    BASE_URL: https://analytics.foxtarget.com
+    DATABASE_URL: postgres://postgres:postgres@plausible-db:5432/plausible_db
+    CLICKHOUSE_DATABASE_URL: http://plausible-events-db:8123/plausible_events_db
+  secret:
+    - SECRET_KEY_BASE
+
+readiness_delay: 20
+deploy_timeout: 60
+drain_timeout: 40
+
+accessories:
+  db:
+    image: postgres:16-alpine
+    host: akira
+    port: "127.0.0.1:5432:5432"
+    env:
+      clear:
+        POSTGRES_DB: plausible_db
+        POSTGRES_USER: postgres
+      secret:
+        - POSTGRES_PASSWORD
+    directories:
+      - db-data:/var/lib/postgresql/data
+  events-db:
+    image: clickhouse/clickhouse-server:24.3.3.102-alpine
+    host: akira
+    port: "127.0.0.1:8123:8123"
+    env:
+      secret:
+        - CLICKHOUSE_PASSWORD
+    directories:
+      - event-data:/var/lib/clickhouse
+      - event-logs:/var/log/clickhouse-server
+    files:
+      - ./clickhouse/logs.xml:/etc/clickhouse-server/config.d/logs.xml:ro
+      - ./clickhouse/ipv4-only.xml:/etc/clickhouse-server/config.d/ipv4-only.xml:ro"

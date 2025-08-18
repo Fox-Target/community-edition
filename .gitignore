@@ -1,4 +1,10 @@
 *
+!.kamal
+!.kamal/*
+!config
+!config/*.yml
+!Dockerfile
+
 !compose.yml
 !clickhouse/logs.xml
 !clickhouse/ipv4-only.xml
