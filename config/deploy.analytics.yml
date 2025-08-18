@@ -1,6 +1,6 @@
 require_destination: true
 
-service: plausible-analytics
+service: plausible
 image: fox-target/plausible-analytics
 
 servers:
