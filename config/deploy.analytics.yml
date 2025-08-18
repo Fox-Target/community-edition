@@ -18,6 +18,7 @@ proxy:
 
 env:
   clear:
+    HTTP_PORT: 8000
     BASE_URL: https://analytics.foxtarget.com
     DATABASE_URL: postgres://postgres:postgres@plausible-db:5432/plausible_db
     CLICKHOUSE_DATABASE_URL: http://plausible-events-db:8123/plausible_events_db
