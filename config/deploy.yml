@@ -1,10 +1,7 @@
 require_destination: true
 
 registry:
-  server: ghcr.io
-  username: fox-target
-  password:
-    - KAMAL_REGISTRY_PASSWORD
+  server: localhost:5555
 
 builder:
   arch: amd64
