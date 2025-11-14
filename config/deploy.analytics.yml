@@ -34,7 +34,7 @@ drain_timeout: 10
 accessories:
   db:
     image: postgres:16-alpine
-    host: akira
+    host: plausible-db
     port: "127.0.0.1:5432:5432"
     env:
       clear:
@@ -46,7 +46,7 @@ accessories:
       - db-data:/var/lib/postgresql/data
   events-db:
     image: clickhouse/clickhouse-server:24.12-alpine
-    host: akira
+    host: plausible-events-db
     port: "127.0.0.1:8123:8123"
     env:
       clear:
