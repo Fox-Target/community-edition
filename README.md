@@ -23,7 +23,7 @@
 1. Clone this repository:
 
     ```console
-    $ git clone -b v2.1.4 --single-branch https://github.com/plausible/community-edition plausible-ce
+    $ git clone -b v3.1.0 --single-branch https://github.com/plausible/community-edition plausible-ce
     Cloning into 'plausible-ce'...
     remote: Enumerating objects: 13, done.
     remote: Counting objects: 100% (10/10), done.
@@ -34,9 +34,10 @@
     $ cd plausible-ce
 
     $ ls -1
-    README.md
     clickhouse/
     compose.yml
+    LICENSE
+    README.md
     ```
 
 1. Create and configure your [environment](https://docs.docker.com/compose/environment-variables/) file:
@@ -51,7 +52,9 @@
     SECRET_KEY_BASE=As0fZsJlUpuFYSthRjT5Yflg/NlxkFKPRro72xMLXF8yInZ60s6xGGXYVqml+XN1
     ```
 
-    Make sure `$BASE_URL` is set to the actual domain where you plan to host the service. The domain must have a DNS entry pointing to your server for proper resolution and automatic Let's Encrypt TLS certificate issuance. More on that in the next step.
+    Make sure `$BASE_URL` is set to the **actual domain** where you plan to host the service. The domain must have a DNS entry pointing to your server for proper resolution and automatic Let's Encrypt TLS certificate issuance. More on that in the next step.
+
+   Also ensure `$SECRET_KEY_BASE` is set to at least a **64-byte** string.
 
 1. Expose Plausible server to the web with a [compose override file:](https://github.com/plausible/community-edition/wiki/compose-override)
 
