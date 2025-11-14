@@ -7,7 +7,7 @@ servers:
   web:
     hosts:
       - akira
-    cmd: sh -c "sleep 10 && ./entrypoint.sh db createdb && ./entrypoint.sh db migrate && ./entrypoint.sh run"
+    cmd: sh -c "sleep 10 && /entrypoint.sh db createdb && /entrypoint.sh db migrate && /entrypoint.sh run"
     # cmd: sh -c "/entrypoint.sh run"
 ssh:
   user: deploy
