@@ -20,7 +20,7 @@ proxy:
 env:
   clear:
     BASE_URL: https://analytics.foxtarget.com
-    DATABASE_URL: postgres://postgres:postgres@plausible-db:5432/plausible_db
+    DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@plausible-db:5432/plausible_db
     CLICKHOUSE_DATABASE_URL: http://plausible-events-db:8123/plausible_events_db
     # DATABASE_URL: postgres://postgres:postgres@plausible-db:5432/plausible_db
     # CLICKHOUSE_DATABASE_URL: http://plausible-events-db:8123/plausible_events_db
@@ -46,7 +46,7 @@ accessories:
       - db-data:/var/lib/postgresql/data
   events-db:
     image: clickhouse/clickhouse-server:24.12-alpine
-    host: plausible-events-db
+    host: akira
     port: "127.0.0.1:8123:8123"
     env:
       clear:
