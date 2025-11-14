@@ -34,7 +34,7 @@ drain_timeout: 10
 accessories:
   db:
     image: postgres:16-alpine
-    host: plausible-db
+    host: akira
     port: "127.0.0.1:5432:5432"
     env:
       clear:
