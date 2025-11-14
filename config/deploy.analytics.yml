@@ -7,7 +7,7 @@ servers:
   web:
     hosts:
       - akira
-    # cmd: sh -c "/entrypoint.sh db createdb && /entrypoint.sh db migrate && /entrypoint.sh run"
+    cmd: sh -c "sleep 10 && /entrypoint.sh db createdb && /entrypoint.sh db migrate && /entrypoint.sh run"
     # cmd: sh -c "/entrypoint.sh run"
 ssh:
   user: deploy
@@ -20,8 +20,10 @@ proxy:
 env:
   clear:
     BASE_URL: https://analytics.foxtarget.com
-    DATABASE_URL: postgres://postgres:postgres@plausible-db:5432/plausible_db
-    CLICKHOUSE_DATABASE_URL: http://plausible-events-db:8123/plausible_events_db
+    DATABASE_URL: postgres://postgres:postgres@plausible-db-analytics:5432/plausible_db
+    CLICKHOUSE_DATABASE_URL: http://plausible-events-db-analytics:8123/plausible_events_db
+    # DATABASE_URL: postgres://postgres:postgres@plausible-db:5432/plausible_db
+    # CLICKHOUSE_DATABASE_URL: http://plausible-events-db:8123/plausible_events_db
   secret:
     - SECRET_KEY_BASE
 
@@ -41,7 +43,8 @@ accessories:
       secret:
         - POSTGRES_PASSWORD
     directories:
-      - db-data:/var/lib/postgresql/data
+      # - db-data:/var/lib/postgresql/data
+      - /var/lib/kamal/plausible/db-data:/var/lib/postgresql/data
   events-db:
     image: clickhouse/clickhouse-server:24.12-alpine
     host: akira
