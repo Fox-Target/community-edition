@@ -20,14 +20,14 @@ proxy:
 env:
   clear:
     BASE_URL: https://analytics.foxtarget.com
-    DATABASE_URL: postgres://postgres:postgres@plausible_db:5432/plausible_db
+    DATABASE_URL: postgres://postgres:postgres@plausible-db:5432/plausible_db
     CLICKHOUSE_DATABASE_URL: http://plausible_events_db:8123/plausible_events_db
     # DATABASE_URL: postgres://postgres:postgres@plausible-db:5432/plausible_db
     # CLICKHOUSE_DATABASE_URL: http://plausible-events-db:8123/plausible_events_db
   secret:
     - SECRET_KEY_BASE
 
-readiness_delay: 300
+readiness_delay: 30
 deploy_timeout: 300
 drain_timeout: 10
 
