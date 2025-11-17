@@ -25,10 +25,6 @@ env:
   secret:
     - SECRET_KEY_BASE
 
-readiness_delay: 30
-deploy_timeout: 300
-drain_timeout: 10
-
 accessories:
   db:
     image: postgres:16-alpine
