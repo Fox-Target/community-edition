@@ -8,7 +8,7 @@ clickhouse/*
 !clickhouse/ipv4-only.xml
 !clickhouse/low-resources.xml
 !clickhouse/default-profile-low-resources-overrides.xml
-!clickhouse/tiny-vps.xml
+!clickhouse/memory-limits.xml
 !config/
 config/*
 !config/deploy.yml

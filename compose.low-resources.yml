@@ -1,4 +1,4 @@
-# Surcouche optionnelle pour VPS très limité (1 vCPU, 1–2 Go de RAM, disque lent).
+# Surcouche optionnelle pour petit VPS (calibrée pour 2 vCPU / 4 Go, disque lent).
 #
 # Usage :
 #   docker compose -f compose.yml -f compose.low-resources.yml up -d
@@ -10,8 +10,9 @@
 #      "dependency failed to start: container plausible_events_db is unhealthy".
 #      Sur un disque lent et/ou avec un volume d'événements qui grossit, ce
 #      délai finit par être dépassé — d'où des déploiements qui marchaient
-#      puis échouent systématiquement.
-#   2. Bridage mémoire supplémentaire de ClickHouse (clickhouse/tiny-vps.xml).
+#      puis échouent systématiquement. C'est le point le plus utile de ce
+#      fichier, et il ne dépend pas de la quantité de RAM.
+#   2. Plafond mémoire de ClickHouse (clickhouse/memory-limits.xml).
 #   3. Rotation des logs Docker, pour ne pas remplir le disque.
 
 services:
@@ -29,9 +30,7 @@ services:
 
   plausible_events_db:
     volumes:
-      # Chargé après low-resources.xml (ordre alphabétique dans config.d),
-      # donc ses valeurs écrasent bien les précédentes.
-      - ./clickhouse/tiny-vps.xml:/etc/clickhouse-server/config.d/tiny-vps.xml:ro
+      - ./clickhouse/memory-limits.xml:/etc/clickhouse-server/config.d/memory-limits.xml:ro
     healthcheck:
       interval: 10s
       timeout: 10s

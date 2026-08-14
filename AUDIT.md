@@ -13,7 +13,16 @@ Ce qui a pu être vérifié :
 - lecture du code de Plausible v3.2.1 (routes de health, gestion de `X-Forwarded-For`, conditions d'activation du TLS interne) et de kamal-proxy ;
 - notes de version amont v2.1.5 → v3.2.1 et commits de correctifs.
 
-Ce qui n'a **pas** pu être vérifié : l'exécution réelle des conteneurs (pas de démon Docker dans l'environnement d'audit) et l'état du VPS (logs, RAM, disque). Les causes de la panne sont donc classées par probabilité, avec pour chacune la commande de diagnostic qui tranche. Le §5 donne le bloc de commandes à lancer sur le VPS.
+Ce qui n'a **pas** pu être vérifié : l'exécution réelle des conteneurs (pas de démon Docker dans l'environnement d'audit) et l'état du VPS (logs, disque). Les causes de la panne sont donc classées par probabilité, avec pour chacune la commande de diagnostic qui tranche. Le §5 donne le bloc de commandes à lancer sur le VPS.
+
+**Machine cible : 2 vCPU / 4 Go de RAM.** C'est au-dessus des 2 Go recommandés en amont, ce qui rétrograde nettement l'hypothèse « OOM » et remonte les causes non liées à la mémoire. Classement des causes probables compte tenu de ces caractéristiques :
+
+| Rang | Constat | Pourquoi |
+| --- | --- | --- |
+| 1 | **P2** — healthcheck ClickHouse trop serré | seule cause qui explique naturellement un basculement définitif « ça marchait / ça ne marche plus » sans changement de configuration ; dépend des I/O disque, pas de la RAM |
+| 2 | **P7** — disque saturé | logs Docker non bornés + images accumulées ; produit des échecs variés et durables |
+| 3 | **P6** — limites de pull Docker Hub | typiquement après plusieurs tentatives de redéploiement rapprochées |
+| 4 | **P1 + P3** — mémoire | reste un vrai bug de configuration, mais à 4 Go et 2 cœurs son effet est bien moindre : le profil non appliqué ne libérait que `max_threads` à 2 au lieu de 1 |
 
 ## 2. État du dépôt
 
@@ -37,7 +46,7 @@ Le fork n'avait pas divergé de l'amont autrement que par le commit `434ed81` (`
 
 **Preuve.** Bug de l'amont, corrigé par le commit `f602706` « Fix low resources settings for Clickhouse » (2026-01-02), livré dans la release v3.2.0 dont les notes indiquent explicitement que les réglages mémoire ClickHouse *« weren't actually applied »*.
 
-**Conséquence sur un petit VPS.** ClickHouse consomme bien plus de mémoire que prévu à l'ingestion et aux requêtes → OOM killer → conteneur tué et redémarré en boucle, ce qui fait échouer le healthcheck et donc le `docker compose up`.
+**Conséquence.** ClickHouse consomme plus de mémoire que prévu à l'ingestion et aux requêtes. Sur une machine à 1 Go cela suffit à déclencher l'OOM killer ; sur les **4 Go / 2 vCPU** de ce VPS, l'effet est bien plus modeste — le réglage ignoré revenait surtout à laisser `max_threads` à 2 (le nombre de cœurs) au lieu de 1, et à garder le parsing parallèle actif. C'est un vrai bug à corriger, mais probablement pas la cause de la panne de déploiement.
 
 **Correctif appliqué.** `clickhouse/default-profile-low-resources-overrides.xml` monté dans `users.d/`, `low-resources.xml` réduit au seul `mark_cache_size`, `CLICKHOUSE_SKIP_USER_SETUP=1` ajouté (sinon l'entrypoint de l'image régénère une config utilisateur qui écrase le profil).
 
@@ -51,13 +60,15 @@ Le fork n'avait pas divergé de l'amont autrement que par le commit `434ed81` (`
 
 **Diagnostic.** `docker inspect --format '{{json .State.Health}}' plausible-ce-plausible_events_db-1 | jq` et les logs du conteneur.
 
-### P3 — Mémoire insuffisante / pas de swap
+### P3 — Répartition de la mémoire (4 Go), pas de swap
 
-L'amont recommande **2 Go de RAM minimum** pour ClickHouse + Plausible. Trois processus lourds cohabitent (BEAM, ClickHouse, Postgres). Sans swap, l'OOM killer frappe pendant `db migrate` — l'étape la plus gourmande, et justement celle qui s'exécute au déploiement.
+L'amont recommande 2 Go minimum ; avec **4 Go**, la marge est correcte pour les trois processus lourds (VM Erlang, ClickHouse, Postgres). Le point à surveiller n'est donc pas la quantité totale mais la **répartition** : par défaut ClickHouse s'autorise 90 % de la RAM visible, soit ~3,6 Go, ce qui ne laisse presque rien aux deux autres. `clickhouse/memory-limits.xml` le plafonne à 50 % (2 Go) ; le cache de marques reste aux 500 Mio de l'amont, qui tiennent largement dans cette enveloppe.
 
-**Diagnostic :** `dmesg -T | grep -i -E 'oom|killed process'`, `docker inspect --format '{{.State.OOMKilled}}' <conteneur>`.
+Le swap reste recommandé (§6) — 2 Go suffisent — mais c'est ici un filet de sécurité pour le pic de `db migrate`, pas un correctif à un manque chronique.
 
-**Correctifs proposés :** activer un fichier de swap (§6) et utiliser `compose.low-resources.yml`, qui plafonne ClickHouse à 50 % de la RAM visible (`max_server_memory_usage_to_ram_ratio`) et ramène le cache de marques de 500 Mio à 128 Mio.
+**Diagnostic :** `dmesg -T | grep -i -E 'oom|killed process'`, `docker inspect --format '{{.State.OOMKilled}}' <conteneur>`. Si aucun OOM n'apparaît, cette piste est close et il faut regarder P2 puis P7.
+
+**Réglage optionnel.** Avec 2 vCPU, le `max_threads: 1` du profil amont est volontairement conservateur ; le passer à 2 dans `clickhouse/default-profile-low-resources-overrides.xml` accélère les requêtes du tableau de bord, au prix d'un pic mémoire un peu plus élevé. À ne faire qu'une fois le déploiement stabilisé, et en gardant à l'esprit que cela crée une divergence avec l'amont.
 
 ### P4 — Retard de version : 20 mois, et sauts de version obligatoires
 
@@ -94,7 +105,7 @@ Le dépôt reste sur `postgres:16-alpine`, comme l'amont. Passer le tag à 17 ou
 - `compose.yml` — aligné sur l'amont v3.2.1 (images v3.2.1 + ClickHouse 24.12, `CLICKHOUSE_SKIP_USER_SETUP=1`, montage `users.d/`), avec `ERL_FLAGS` conservé.
 - `clickhouse/default-profile-low-resources-overrides.xml` — **nouveau** (correctif P1).
 - `clickhouse/low-resources.xml` — réduit à `mark_cache_size`.
-- `clickhouse/tiny-vps.xml` — **nouveau**, overrides mémoire pour < 2 Go (opt-in).
+- `clickhouse/memory-limits.xml` — **nouveau**, plafonne ClickHouse à 50 % de la RAM (2 Go sur 4).
 - `compose.low-resources.yml` — **nouveau**, surcouche opt-in (healthchecks, mémoire, logs).
 - `README.md` — version amont v3.2.1 + section « Notes de ce fork ».
 - `.gitignore` — nouveaux fichiers ajoutés à la liste blanche.
@@ -159,7 +170,7 @@ docker run --rm -v plausible-ce_event-data:/data:ro -v "$PWD":/backup alpine \
   tar czf /backup/clickhouse-$(date +%F).tar.gz -C /data .
 # ajuster le nom du volume si besoin : docker volume ls | grep event-data
 
-# 1. Swap, si absent (recommandé sous 2 Go de RAM)
+# 1. Swap, si absent : filet de sécurité pour le pic de migration et de bascule
 sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 
@@ -282,7 +293,7 @@ Tester d'abord sur une copie : une restauration ClickHouse ratée est bien plus 
 
 ### K9 — Ce que Kamal ajoute sur un VPS déjà juste
 
-kamal-proxy est un conteneur Go supplémentaire (empreinte faible, quelques dizaines de Mo) et Kamal conserve l'ancien conteneur applicatif le temps du basculement : pendant un déploiement, **deux instances de Plausible tournent brièvement en parallèle**. Sur une machine à 1 Go, c'est le moment le plus tendu ; le swap du §6 devient ici une nécessité, pas un confort.
+kamal-proxy est un conteneur Go supplémentaire (empreinte faible, quelques dizaines de Mo) et Kamal conserve l'ancien conteneur applicatif le temps du basculement : pendant un déploiement, **deux instances de Plausible tournent brièvement en parallèle**. C'est le pic de consommation du cycle de vie, et il se cumule avec les migrations. Avec 4 Go et ClickHouse plafonné à 2 Go, ça passe ; c'est la raison principale de garder du swap.
 
 ### Aide-mémoire
 
@@ -300,5 +311,5 @@ kamal proxy logs --follow             # diagnostic TLS / routage
 ## 8. Points restés ouverts
 
 - La cause exacte de la panne d'origine n'est pas prouvée faute d'accès aux logs du VPS : P2 et P1+P3 sont les hypothèses les plus probables, le §5 permet de trancher en une minute.
-- Les valeurs de `compose.low-resources.yml` et `clickhouse/tiny-vps.xml` sont calibrées pour 1–2 Go de RAM ; elles méritent d'être ajustées si le VPS est plus (ou moins) doté.
-- Sous ~1 Go de RAM, même après ces correctifs, ClickHouse reste au-dessus de ce que la machine peut absorber confortablement : ajouter du swap est alors un pansement, pas une solution.
+- Les valeurs de `compose.low-resources.yml` et `clickhouse/memory-limits.xml` sont calibrées pour **2 vCPU / 4 Go**. À revoir si la machine change : abaisser le ratio à 0,4 sous 2 Go, le remonter vers 0,6–0,7 au-delà de 8 Go.
+- La quantité de RAM étant confortable, le facteur limitant probable est le **disque** (débit et place libre), qui n'a pas pu être mesuré d'ici. Les deux hypothèses de tête, P2 et P7, en dépendent directement.

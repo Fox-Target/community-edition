@@ -97,8 +97,8 @@ Ce dépôt suit [plausible/community-edition](https://github.com/plausible/commu
 | --- | --- |
 | `config/deploy.yml` + `.kamal/secrets.example` | déploiement avec **Kamal 2** (voir ci-dessous) |
 | `ERL_FLAGS=+sbwt none +sbwtdcpu none +sbwtdio none` | désactive l'attente active de la VM Erlang, réduit la conso CPU au repos |
-| `compose.low-resources.yml` | surcouche **optionnelle** pour VPS très limité : healthchecks tolérants, bridage mémoire ClickHouse, rotation des logs Docker |
-| `clickhouse/tiny-vps.xml` | overrides mémoire ClickHouse pour moins de 2 Go de RAM |
+| `compose.low-resources.yml` | surcouche **optionnelle** pour petit VPS : healthchecks tolérants, plafond mémoire ClickHouse, rotation des logs Docker |
+| `clickhouse/memory-limits.xml` | plafonne ClickHouse à 50 % de la RAM, pour laisser de la place aux autres services |
 | [`AUDIT.md`](AUDIT.md) | audit du déploiement : causes probables d'échec, diagnostic, procédures |
 
 Sur un VPS peu doté, démarrer avec la surcouche :

@@ -110,8 +110,8 @@ accessories:
       - clickhouse/logs.xml:/etc/clickhouse-server/config.d/logs.xml
       - clickhouse/ipv4-only.xml:/etc/clickhouse-server/config.d/ipv4-only.xml
       - clickhouse/low-resources.xml:/etc/clickhouse-server/config.d/low-resources.xml
-      # Overrides pour moins de 2 Go de RAM ; à retirer si le VPS est mieux doté.
-      - clickhouse/tiny-vps.xml:/etc/clickhouse-server/config.d/tiny-vps.xml
+      # Plafonne ClickHouse à 50 % de la RAM (2 Go sur les 4 Go du VPS).
+      - clickhouse/memory-limits.xml:/etc/clickhouse-server/config.d/memory-limits.xml
       # Les profils de settings se lisent depuis users.d, pas config.d.
       - clickhouse/default-profile-low-resources-overrides.xml:/etc/clickhouse-server/users.d/default-profile-low-resources-overrides.xml
     directories:
