@@ -1,7 +1,7 @@
 *
 !compose.yml
 !compose.low-resources.yml
-# the directory must be un-ignored before files inside it can be re-included
+# un répertoire doit être désexclu avant de pouvoir y réinclure des fichiers
 !clickhouse/
 clickhouse/*
 !clickhouse/logs.xml
@@ -9,6 +9,13 @@ clickhouse/*
 !clickhouse/low-resources.xml
 !clickhouse/default-profile-low-resources-overrides.xml
 !clickhouse/tiny-vps.xml
+!config/
+config/*
+!config/deploy.yml
+!.kamal/
+.kamal/*
+# .kamal/secrets contient les vrais secrets : il reste ignoré
+!.kamal/secrets.example
 !README.md
 !AUDIT.md
 !LICENSE

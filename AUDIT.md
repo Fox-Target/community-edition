@@ -9,6 +9,8 @@ Ce qui a pu être vérifié :
 - comparaison ligne à ligne du dépôt avec l'amont `plausible/community-edition` (historique complet cloné) ;
 - disponibilité réelle des images (`ghcr.io/plausible/community-edition`, `clickhouse/clickhouse-server`, `postgres`) interrogée directement sur les registries ;
 - validation des fichiers `compose.yml` / `compose.low-resources.yml` (`docker compose config`) et des XML ClickHouse ;
+- validation de `config/deploy.yml` avec Kamal 2.12.0 (`kamal config`), et inspection des commandes `docker run` que Kamal produit pour l'application et les deux accessoires ;
+- lecture du code de Plausible v3.2.1 (routes de health, gestion de `X-Forwarded-For`, conditions d'activation du TLS interne) et de kamal-proxy ;
 - notes de version amont v2.1.5 → v3.2.1 et commits de correctifs.
 
 Ce qui n'a **pas** pu être vérifié : l'exécution réelle des conteneurs (pas de démon Docker dans l'environnement d'audit) et l'état du VPS (logs, RAM, disque). Les causes de la panne sont donc classées par probabilité, avec pour chacune la commande de diagnostic qui tranche. Le §5 donne le bloc de commandes à lancer sur le VPS.
@@ -87,6 +89,8 @@ Le dépôt reste sur `postgres:16-alpine`, comme l'amont. Passer le tag à 17 ou
 
 ## 4. Ce qui a changé dans le dépôt
 
+- `config/deploy.yml` — **nouveau**, configuration Kamal 2 (voir §7).
+- `.kamal/secrets.example` — **nouveau**, modèle de fichier de secrets.
 - `compose.yml` — aligné sur l'amont v3.2.1 (images v3.2.1 + ClickHouse 24.12, `CLICKHOUSE_SKIP_USER_SETUP=1`, montage `users.d/`), avec `ERL_FLAGS` conservé.
 - `clickhouse/default-profile-low-resources-overrides.xml` — **nouveau** (correctif P1).
 - `clickhouse/low-resources.xml` — réduit à `mark_cache_size`.
@@ -126,6 +130,22 @@ Les trois signatures à repérer :
 | `oom=true`, `Killed process` dans `dmesg` | P3 (+ P1) |
 | `toomanyrequests` / `no space left on device` | P6 / P7 |
 
+Côté Kamal, l'équivalent :
+
+```sh
+kamal app details                      # conteneurs et versions en place
+kamal app logs --lines 200
+kamal accessory logs events-db --lines 200
+kamal proxy logs --lines 200           # échecs de healthcheck, TLS, routage
+```
+
+| Signature | Constat |
+| --- | --- |
+| `Health check failed` / timeout au déploiement | K1 (chemin `/up`) ou K2 (`deploy_timeout`) |
+| `manifest unknown` / `not found` au pull | K3 (`--version` absent) |
+| `unauthorized` au pull | K4 (identifiants de registre) |
+| certificat Let's Encrypt jamais émis | K5 (ports 80/443 déjà pris) |
+
 ## 6. Procédure de mise à jour recommandée
 
 ```sh
@@ -162,7 +182,122 @@ docker compose logs -f plausible
 
 Si un `compose.override.yml` existe (exposition des ports 80/443), il est chargé automatiquement en plus — inutile de le passer en `-f`, mais vérifier qu'il ne référence plus l'ancienne version d'image.
 
-## 7. Points restés ouverts
+## 7. Déploiement avec Kamal
+
+Le déploiement cible est **Kamal 2** (validé ici avec la version 2.12.0 : `kamal config` passe et les commandes `docker run` produites ont été inspectées). `config/deploy.yml` décrit un rôle applicatif `web` et deux accessoires, `db` (Postgres) et `events-db` (ClickHouse), tous sur le réseau docker `kamal`, ce qui permet la résolution DNS par nom de conteneur (`plausible-db`, `plausible-events-db`).
+
+Les constats P1, P3, P4 à P9 du §3 restent valables tels quels. En revanche P2 (healthcheck Compose) et la surcouche `compose.low-resources.yml` ne s'appliquent pas : Kamal a ses propres mécanismes, avec ses propres pièges.
+
+### K1 — Le healthcheck par défaut de kamal-proxy échoue toujours
+
+kamal-proxy interroge **`/up`** par défaut. Plausible n'expose pas cette route : elle renvoie 404, le proxy ne bascule jamais le trafic, et **tous** les déploiements échouent en timeout. C'est l'équivalent Kamal du constat P2 — et la première chose à vérifier si un déploiement Kamal a échoué par le passé.
+
+Endpoints réellement disponibles :
+
+| Route | Comportement |
+| --- | --- |
+| `/api/health` | 200 seulement si Postgres **et** ClickHouse **et** les caches **et** les sessions sont prêts |
+| `/api/system/health/live` | 200 dès que la VM répond (pas de vérification des bases) |
+| `/api/system/health/ready` | identique à `/api/health` |
+
+`config/deploy.yml` utilise `/api/health` : c'est le bon choix, le trafic n'est basculé que sur une instance réellement fonctionnelle.
+
+### K2 — `deploy_timeout` par défaut (30 s) contre une migration v2 → v3
+
+La commande du conteneur enchaîne `db createdb`, `db migrate` puis `run` : le port n'est ouvert qu'une fois les migrations terminées, ce qui peut prendre plusieurs minutes sur un petit VPS. Avec les 30 s par défaut, Kamal abandonne avant. Le fichier fixe `deploy_timeout: 900`.
+
+### K3 — `--version` est obligatoire
+
+On déploie une image amont, sans build local. Kamal doit donc être appelé avec `-P` (skip build & push) **et** `--version` :
+
+```sh
+kamal setup  -P --version=v3.2.1   # première installation
+kamal deploy -P --version=v3.2.1   # mises à jour
+```
+
+Sans `--version`, Kamal prend le SHA git de *ce dépôt* comme tag d'image ; ce tag n'existe pas sur ghcr.io et le `docker pull` échoue sur le serveur. C'est aussi ce tag qui sert de nom de conteneur (`plausible-web-v3.2.1`) et de cible de `kamal rollback`.
+
+### K4 — Identifiants de registre exigés même pour une image publique
+
+`ghcr.io/plausible/community-edition` est public, mais la validation Kamal impose `registry/username` et `registry/password` dès que le serveur n'est pas `localhost`. Un PAT GitHub avec le seul scope `read:packages` suffit ; il se déclare dans `.kamal/secrets` sous `KAMAL_REGISTRY_PASSWORD`. De même, `builder/arch` doit être renseigné alors que rien n'est construit (`amd64`, ou `arm64` si le VPS est ARM), sinon la configuration est refusée au chargement.
+
+### K5 — TLS : un seul terminateur
+
+kamal-proxy occupe les ports **80 et 443** et gère Let's Encrypt (`proxy/ssl: true`). Il faut donc :
+
+- **ne pas définir `HTTPS_PORT`** — cette variable est le seul déclencheur du Let's Encrypt interne de Plausible ; définie, elle ferait démarrer un second serveur ACME en conflit avec le proxy ;
+- définir `HTTP_PORT: "8000"` et `proxy/app_port: 8000` ;
+- garder `BASE_URL` en `https://…` (c'est lui qui détermine le cookie `secure`) ;
+- **arrêter l'ancienne pile Compose avant le premier `kamal setup`**, sinon les ports 80/443 sont déjà pris et l'émission du certificat échoue.
+
+Sans `HTTPS_PORT`, la redirection HTTPS interne de Plausible reste désactivée : pas de risque de boucle de redirection derrière le proxy.
+
+### K6 — Ne pas activer `forward_headers`
+
+Plausible détermine l'IP du visiteur en prenant la **première** valeur de `X-Forwarded-For`. Avec `ssl: true`, kamal-proxy réécrit cet en-tête avec l'IP réelle du client : c'est le comportement voulu. Activer `forward_headers: true` lui ferait au contraire conserver l'en-tête envoyé par le client, qui passerait alors en première position — n'importe quel visiteur pourrait falsifier son IP, donc son pays, dans les statistiques. À laisser désactivé tant que rien d'autre (Cloudflare, un autre proxy) n'est placé devant.
+
+### K7 — Les accessoires ne sont pas gérés par `kamal deploy`
+
+Deux conséquences pratiques :
+
+- **Modifier un fichier `clickhouse/*.xml` n'a aucun effet sur un simple `kamal deploy`.** Les fichiers déclarés sous `files:` sont téléversés au boot de l'accessoire ; il faut `kamal accessory reboot events-db` (arrêt/redémarrage du conteneur, donc courte interruption).
+- **Aucun ordonnancement ni healthcheck entre accessoires et application.** Au tout premier démarrage, l'application peut boucler en redémarrages tant que ClickHouse n'est pas prêt ; c'est normal et sans gravité, `deploy_timeout` laisse le temps. Pour éviter le bruit, booter les accessoires d'abord :
+
+```sh
+kamal accessory boot all
+kamal accessory logs events-db --follow   # attendre "Ready for connections"
+kamal deploy -P --version=v3.2.1
+```
+
+### K8 — Les données ne sont plus au même endroit qu'avec Compose
+
+Kamal ne crée pas de volumes docker nommés pour les accessoires : il monte des répertoires du serveur, relatifs au répertoire de connexion SSH (`$PWD`, typiquement `/root`) :
+
+| Donnée | Compose | Kamal |
+| --- | --- | --- |
+| Postgres | volume `plausible-ce_db-data` | `~/plausible-db/data` |
+| ClickHouse | volume `plausible-ce_event-data` | `~/plausible-events-db/data` |
+| Logs ClickHouse | volume `plausible-ce_event-logs` | `~/plausible-events-db/logs` |
+| Config ClickHouse | bind depuis le dépôt | `~/plausible-events-db/etc/clickhouse-server/…` |
+| Données Plausible (certs, tmp) | volume `plausible-ce_plausible-data` | volume `plausible-data` (déclaré dans `volumes:`) |
+
+**Migrer une installation Compose existante ne se fait donc pas tout seul.** Le plus sûr, pour Postgres, est un dump/restore ; pour ClickHouse, une copie du contenu du volume, propriétaire rétabli :
+
+```sh
+# Postgres : dump depuis l'ancienne pile
+docker compose exec -T plausible_db pg_dump -U postgres -d plausible_db | gzip > pg.sql.gz
+
+# ClickHouse : copie du volume vers l'emplacement attendu par Kamal
+docker compose down
+docker run --rm -v plausible-ce_event-data:/from:ro -v /root/plausible-events-db/data:/to \
+  alpine sh -c 'cp -a /from/. /to/'
+docker run --rm -v /root/plausible-events-db/data:/data alpine \
+  sh -c 'chown -R 101:101 /data'   # vérifier l'UID réel : docker run --rm clickhouse/clickhouse-server:24.12-alpine id clickhouse
+
+# puis, après kamal setup, restaurer Postgres
+gunzip -c pg.sql.gz | kamal accessory exec db -i --reuse "psql -U postgres -d plausible_db"
+```
+
+Tester d'abord sur une copie : une restauration ClickHouse ratée est bien plus coûteuse qu'un dump refait.
+
+### K9 — Ce que Kamal ajoute sur un VPS déjà juste
+
+kamal-proxy est un conteneur Go supplémentaire (empreinte faible, quelques dizaines de Mo) et Kamal conserve l'ancien conteneur applicatif le temps du basculement : pendant un déploiement, **deux instances de Plausible tournent brièvement en parallèle**. Sur une machine à 1 Go, c'est le moment le plus tendu ; le swap du §6 devient ici une nécessité, pas un confort.
+
+### Aide-mémoire
+
+```sh
+kamal setup  -P --version=v3.2.1      # bootstrap serveur + accessoires + déploiement
+kamal deploy -P --version=v3.2.1      # déploiement suivant
+kamal app logs --follow               # logs applicatifs
+kamal accessory logs events-db -f     # logs ClickHouse
+kamal accessory reboot events-db      # après modification des XML ClickHouse
+kamal app exec -i --reuse "/entrypoint.sh db migrate"
+kamal rollback v3.1.0                 # bascule sur un conteneur encore présent
+kamal proxy logs --follow             # diagnostic TLS / routage
+```
+
+## 8. Points restés ouverts
 
 - La cause exacte de la panne d'origine n'est pas prouvée faute d'accès aux logs du VPS : P2 et P1+P3 sont les hypothèses les plus probables, le §5 permet de trancher en une minute.
 - Les valeurs de `compose.low-resources.yml` et `clickhouse/tiny-vps.xml` sont calibrées pour 1–2 Go de RAM ; elles méritent d'être ajustées si le VPS est plus (ou moins) doté.
