@@ -1,8 +1,15 @@
 *
 !compose.yml
+!compose.low-resources.yml
+# the directory must be un-ignored before files inside it can be re-included
+!clickhouse/
+clickhouse/*
 !clickhouse/logs.xml
 !clickhouse/ipv4-only.xml
 !clickhouse/low-resources.xml
+!clickhouse/default-profile-low-resources-overrides.xml
+!clickhouse/tiny-vps.xml
 !README.md
+!AUDIT.md
 !LICENSE
 !.gitignore

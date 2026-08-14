@@ -1,0 +1,20 @@
+<!--
+    Overrides supplémentaires pour un serveur avec très peu de RAM (< 2 Go).
+    Chargé uniquement via compose.low-resources.yml.
+
+    Ce fichier est lu après clickhouse/low-resources.xml (les fichiers de
+    config.d sont fusionnés par ordre alphabétique), il en abaisse donc les
+    valeurs.
+-->
+<clickhouse>
+    <!--
+    Plafonne la mémoire du serveur ClickHouse à 50 % de la RAM visible
+    (90 % par défaut), pour laisser de la place à Postgres et à Plausible.
+    https://clickhouse.com/docs/en/operations/server-configuration-parameters/settings#max_server_memory_usage_to_ram_ratio -->
+    <max_server_memory_usage_to_ram_ratio>0.5</max_server_memory_usage_to_ram_ratio>
+
+    <!--
+    128 Mio au lieu des 500 Mio de low-resources.xml (prévus pour < 16 Go de RAM).
+    https://clickhouse.com/docs/en/operations/server-configuration-parameters/settings#mark_cache_size -->
+    <mark_cache_size>134217728</mark_cache_size>
+</clickhouse>
