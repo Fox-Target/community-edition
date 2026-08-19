@@ -289,20 +289,92 @@ Sauvegarder **avant** le passage en v3.2.1 : le retour arrière d'une migration 
 
 ### K9 — Incohérence sur le mot de passe Postgres
 
-`DATABASE_URL` se connecte avec le mot de passe littéral `postgres`, alors que l'accessoire `db` reçoit un `POSTGRES_PASSWORD` issu de Dashlane. Si la connexion fonctionne, c'est que le volume a été initialisé avec `postgres` : l'image Postgres n'applique `POSTGRES_PASSWORD` qu'à la **première** initialisation, et l'ignore ensuite.
+`DATABASE_URL` se connecte avec le mot de passe littéral `postgres`, alors que l'accessoire `db` reçoit un `POSTGRES_PASSWORD` issu de Dashlane. Deux mécanismes de l'image `postgres` expliquent que ça fonctionne quand même — et pourquoi c'est fragile :
 
-**Rien n'a été changé ici** — aligner les deux au mauvais moment couperait l'accès à la base. Pour le faire proprement, plus tard et en connaissance de cause :
+- `POSTGRES_PASSWORD` n'est lu qu'à la **première** initialisation du répertoire de données. Ensuite l'entrypoint le voit, constate que la base existe (`PG_VERSION` présent) et l'ignore complètement. Le volume a donc été initialisé avec `postgres`, et le secret Dashlane n'a jamais rien protégé.
+- L'entrypoint n'ajoute qu'une seule ligne à `pg_hba.conf` : `host all all all scram-sha-256`. Les connexions par **socket Unix** restent en `trust`, celles par TCP exigent le mot de passe.
+
+**Le vrai risque n'est pas l'accès, c'est la reconstruction.** Aujourd'hui, si le volume était recréé — nouveau serveur, restauration de sauvegarde, `directories` effacé — Postgres s'initialiserait avec le mot de passe **Dashlane** pendant que l'application continuerait à présenter `postgres`. Résultat : une base inaccessible, au pire moment, avec un message d'authentification qui ne dit pas d'où vient le désaccord.
+
+#### Étape 0 — Établir quel mot de passe la base accepte réellement
+
+Le piège : `docker exec … psql -U postgres` passe par le socket Unix, donc par `trust`. **Cette commande réussit quel que soit le mot de passe et ne prouve rien.** Il faut forcer une connexion TCP avec `-h 127.0.0.1` :
 
 ```sh
-# 1. changer le mot de passe dans Postgres
-kamal accessory exec db -i --reuse -d analytics \
-  "psql -U postgres -c \"ALTER USER postgres PASSWORD '<le mot de passe Dashlane>'\""
-# 2. puis basculer DATABASE_URL en secret, comme SECRET_KEY_BASE
+# sur akira
+PW=$(dcli read dl://plausible-postgres-password/password)
+
+docker exec -e PGPASSWORD=postgres plausible-db \
+  psql -h 127.0.0.1 -U postgres -d plausible_db -c 'select 1'      # (a)
+docker exec -e PGPASSWORD="$PW" plausible-db \
+  psql -h 127.0.0.1 -U postgres -d plausible_db -c 'select 1'      # (b)
 ```
 
-Tant que ce n'est pas fait, le `POSTGRES_PASSWORD` de Dashlane ne protège rien. Le port n'étant publié que sur `127.0.0.1`, l'exposition reste limitée aux comptes du serveur.
+| Résultat | Situation | Suite |
+| --- | --- | --- |
+| (a) passe | la base est bien sur `postgres` | option A ou B ci-dessous |
+| (b) passe | la base est déjà sur le secret Dashlane, et l'application ne peut pas se connecter du tout | seule l'étape A3 est nécessaire |
+| aucun ne passe | ni l'un ni l'autre — regarder `kamal accessory logs db -d analytics` avant toute chose | — |
 
-À noter dans le même esprit : `CLICKHOUSE_PASSWORD` a été retiré de l'accessoire `events-db`. Avec `CLICKHOUSE_SKIP_USER_SETUP=1`, l'entrypoint de l'image ne configure aucun utilisateur, la variable n'avait donc aucun effet — et `CLICKHOUSE_DATABASE_URL` ne porte de toute façon pas de mot de passe.
+#### Option A — Aligner sur le secret Dashlane (recommandé)
+
+**A1. Vérifier que le mot de passe passe sans encodage dans une URL.** Plausible transmet `DATABASE_URL` telle quelle à Ecto, qui décode la partie `user:password` avec `URI.decode_www_form/1`. Un `@`, `:`, `/`, `#`, `?` ou `%` casse l'analyse de l'URL, et un `+` serait décodé en **espace**.
+
+```sh
+printf '%s' "$PW" | grep -qE '^[A-Za-z0-9._~-]+$' \
+  && echo "utilisable tel quel" \
+  || echo "à régénérer en alphanumérique, ou à encoder en pourcentage"
+```
+
+Le plus simple est de régénérer un mot de passe sans caractère spécial dans Dashlane : `openssl rand -hex 24`.
+
+**A2. Changer le mot de passe dans Postgres.** Le socket Unix étant en `trust`, l'ancien mot de passe n'est pas nécessaire. Passer l'ordre par l'entrée standard plutôt qu'avec `-c`, pour qu'il n'apparaisse pas dans la table des processus du serveur :
+
+```sh
+printf "ALTER USER postgres PASSWORD '%s';\n" "$PW" \
+  | docker exec -i plausible-db psql -U postgres -d postgres
+```
+
+À ce stade l'application tourne encore avec l'ancien mot de passe en mémoire : elle continue de fonctionner jusqu'à la prochaine reconnexion. Enchaîner sans traîner.
+
+**A3. Basculer `DATABASE_URL` en secret.** Dans `.kamal/secrets.analytics`, **après** la ligne `POSTGRES_PASSWORD` (la substitution est séquentielle) :
+
+```sh
+DATABASE_URL=postgres://postgres:$POSTGRES_PASSWORD@plausible-db:5432/plausible_db
+```
+
+Et dans `config/deploy.analytics.yml` :
+
+```diff
+ env:
+   clear:
+     ...
+-    DATABASE_URL: postgres://postgres:postgres@plausible-db:5432/plausible_db
+     CLICKHOUSE_DATABASE_URL: http://plausible-events-db:8123/plausible_events_db
+   secret:
+     - SECRET_KEY_BASE
++    - DATABASE_URL
+```
+
+**A4. Déployer et vérifier :**
+
+```sh
+kamal deploy -d analytics
+curl -fsS https://analytics.foxtarget.com/api/health   # doit renvoyer postgres: "ok"
+```
+
+**Retour arrière**, si A3 échoue alors que A2 est déjà passé : remettre l'ancien mot de passe côté base avec la commande de A2 (`postgres` à la place de `$PW`), puis redéployer la configuration précédente. Ne pas se contenter de rétablir `DATABASE_URL` : la base, elle, a déjà changé.
+
+#### Option B — Assumer le mot de passe par défaut
+
+C'est la posture de l'amont, dont le `compose.yml` utilise `POSTGRES_PASSWORD=postgres`. Il faut alors le rendre **explicite et cohérent**, pour ne pas retomber sur le piège de la reconstruction : retirer `POSTGRES_PASSWORD` de `secret` et le déclarer en clair à `postgres` dans `env/clear` de l'accessoire.
+
+Ce qui est accepté en faisant ce choix : le port n'est publié que sur `127.0.0.1`, mais tout compte du serveur et **tout conteneur du réseau docker `kamal`** — donc toute autre application déployée par Kamal sur `akira` — peut se connecter à la base. Acceptable si la machine n'héberge que Plausible.
+
+#### Dans le même esprit : `CLICKHOUSE_PASSWORD`
+
+Retiré de l'accessoire `events-db`. Avec `CLICKHOUSE_SKIP_USER_SETUP=1`, l'entrypoint de l'image ne configure aucun utilisateur : la variable n'avait aucun effet, et `CLICKHOUSE_DATABASE_URL` ne porte de toute façon pas de mot de passe. Si l'accès à ClickHouse doit être protégé un jour, cela passe par un fichier dans `users.d`, pas par cette variable.
+
 
 ### K10 — Ce que Kamal ajoute en consommation
 
