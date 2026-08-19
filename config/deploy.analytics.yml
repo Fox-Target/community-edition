@@ -38,10 +38,12 @@ env:
     TMPDIR: /var/lib/plausible/tmp
     # Désactive l'attente active de la VM Erlang (CPU au repos).
     ERL_FLAGS: "+sbwt none +sbwtdcpu none +sbwtdio none"
-    DATABASE_URL: postgres://postgres:postgres@plausible-db:5432/plausible_db
     CLICKHOUSE_DATABASE_URL: http://plausible-events-db:8123/plausible_events_db
   secret:
     - SECRET_KEY_BASE
+    # Assemblée dans .kamal/secrets.analytics à partir de POSTGRES_PASSWORD :
+    # le mot de passe ne vit qu'à un seul endroit.
+    - DATABASE_URL
 
 # Le conteneur enchaîne createdb, migrations puis démarrage : le port ne s'ouvre
 # qu'à la fin. kamal-proxy attend au plus deploy_timeout que /api/health réponde
