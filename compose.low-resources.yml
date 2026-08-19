@@ -1,0 +1,42 @@
+# Surcouche optionnelle pour petit VPS (calibrée pour 2 vCPU / 4 Go, disque lent).
+#
+# Usage :
+#   docker compose -f compose.yml -f compose.low-resources.yml up -d
+#
+# Ce que ça change :
+#   1. Healthchecks beaucoup plus tolérants. Avec les valeurs par défaut
+#      (start_period 1m, interval 30s, retries 3), ClickHouse doit être prêt
+#      en ~2m30 sinon Compose abandonne avec
+#      "dependency failed to start: container plausible_events_db is unhealthy".
+#      Sur un disque lent et/ou avec un volume d'événements qui grossit, ce
+#      délai finit par être dépassé — d'où des déploiements qui marchaient
+#      puis échouent systématiquement. C'est le point le plus utile de ce
+#      fichier, et il ne dépend pas de la quantité de RAM.
+#   2. Plafond mémoire de ClickHouse (clickhouse/memory-limits.xml).
+#   3. Rotation des logs Docker, pour ne pas remplir le disque.
+
+services:
+  plausible_db:
+    healthcheck:
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 5m
+    logging: &small-logs
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  plausible_events_db:
+    volumes:
+      - ./clickhouse/memory-limits.xml:/etc/clickhouse-server/config.d/memory-limits.xml:ro
+    healthcheck:
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 5m
+    logging: *small-logs
+
+  plausible:
+    logging: *small-logs

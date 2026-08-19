@@ -1,8 +1,22 @@
 *
 !compose.yml
+!compose.low-resources.yml
+# un répertoire doit être désexclu avant de pouvoir y réinclure des fichiers
+!clickhouse/
+clickhouse/*
 !clickhouse/logs.xml
 !clickhouse/ipv4-only.xml
 !clickhouse/low-resources.xml
+!clickhouse/default-profile-low-resources-overrides.xml
+!clickhouse/memory-limits.xml
+!config/
+config/*
+!config/deploy.yml
+!.kamal/
+.kamal/*
+# .kamal/secrets contient les vrais secrets : il reste ignoré
+!.kamal/secrets.example
 !README.md
+!AUDIT.md
 !LICENSE
 !.gitignore

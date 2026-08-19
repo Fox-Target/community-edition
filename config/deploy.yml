@@ -1,0 +1,121 @@
+# Déploiement Plausible CE avec Kamal 2.
+#
+# L'image déployée est celle publiée par Plausible : rien n'est construit ici.
+# Il faut donc toujours déployer avec -P (skip build & push) ET une version
+# explicite :
+#
+#   kamal setup  -P --version=v3.2.1    # première installation
+#   kamal deploy -P --version=v3.2.1    # mises à jour
+#
+# Sans --version, Kamal utilise le SHA git de CE dépôt comme tag d'image ; ce
+# tag n'existe pas sur ghcr.io et le pull échoue. Voir AUDIT.md § Kamal.
+
+service: plausible
+image: plausible/community-edition
+
+# ghcr.io n'exige pas d'authentification pour cette image publique, mais Kamal
+# exige quand même un couple identifiants : un PAT GitHub avec le seul scope
+# read:packages suffit.
+registry:
+  server: ghcr.io
+  username: CHANGEME-login-github
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+# Rien n'est construit ici, mais Kamal 2 refuse de charger une configuration
+# sans architecture de build. Mettre arm64 si le VPS est en ARM.
+builder:
+  arch: amd64
+
+servers:
+  web:
+    hosts:
+      - CHANGEME.vps.ip
+    # Même commande que dans compose.yml : création de la base, migrations,
+    # puis démarrage du serveur.
+    cmd: sh -c "/entrypoint.sh db createdb && /entrypoint.sh db migrate && /entrypoint.sh run"
+
+proxy:
+  host: CHANGEME.example.com
+  # Port d'écoute de Plausible dans le conteneur (voir HTTP_PORT plus bas).
+  app_port: 8000
+  # kamal-proxy termine TLS et gère Let's Encrypt : ports 80 et 443 du VPS
+  # requis, et rien d'autre ne doit les occuper.
+  ssl: true
+  # Sans ceci, kamal-proxy interroge /up — qui n'existe pas chez Plausible —
+  # et TOUS les déploiements échouent en timeout.
+  # /api/health ne répond 200 que si Postgres, ClickHouse et les caches sont prêts.
+  healthcheck:
+    path: /api/health
+    interval: 5
+    timeout: 5
+  # Ne PAS activer forward_headers ici : avec ssl: true, kamal-proxy réécrit
+  # X-Forwarded-For avec l'IP réelle du client, ce dont Plausible a besoin
+  # (il lit la première valeur de l'en-tête). L'activer laisserait un visiteur
+  # falsifier son IP, donc son pays, via un en-tête forgé.
+
+# La commande ci-dessus exécute les migrations avant d'ouvrir le port : sur un
+# petit VPS, la migration v2 -> v3 dure plusieurs minutes. kamal-proxy attend
+# au plus deploy_timeout que /api/health réponde 200 (30 s par défaut).
+deploy_timeout: 900
+drain_timeout: 30
+
+volumes:
+  - "plausible-data:/var/lib/plausible"
+
+# S'applique aussi aux accessoires : évite de saturer le disque du VPS.
+logging:
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: 3
+
+env:
+  clear:
+    BASE_URL: https://CHANGEME.example.com
+    HTTP_PORT: "8000"
+    # Ne surtout PAS définir HTTPS_PORT : cela réactiverait le Let's Encrypt
+    # interne de Plausible, qui entrerait en conflit avec kamal-proxy.
+    TMPDIR: /var/lib/plausible/tmp
+    # Désactive l'attente active de la VM Erlang (CPU au repos).
+    ERL_FLAGS: "+sbwt none +sbwtdcpu none +sbwtdio none"
+    # Noms de conteneurs des accessoires sur le réseau docker « kamal ».
+    CLICKHOUSE_DATABASE_URL: http://plausible-events-db:8123/plausible_events_db
+    # Après avoir créé votre compte, ajouter : DISABLE_REGISTRATION: "true"
+  secret:
+    - SECRET_KEY_BASE
+    - DATABASE_URL
+
+accessories:
+  # Conteneur « plausible-db », données dans ~/plausible-db/data sur le VPS.
+  db:
+    image: postgres:16-alpine
+    host: CHANGEME.vps.ip
+    env:
+      secret:
+        - POSTGRES_PASSWORD
+    directories:
+      - data:/var/lib/postgresql/data
+
+  # Conteneur « plausible-events-db », données dans ~/plausible-events-db/data.
+  events-db:
+    image: clickhouse/clickhouse-server:24.12-alpine
+    host: CHANGEME.vps.ip
+    env:
+      clear:
+        # Empêche l'entrypoint de l'image de réécrire la config utilisateur,
+        # ce qui annulerait le profil « low resources » monté ci-dessous.
+        CLICKHOUSE_SKIP_USER_SETUP: "1"
+    files:
+      - clickhouse/logs.xml:/etc/clickhouse-server/config.d/logs.xml
+      - clickhouse/ipv4-only.xml:/etc/clickhouse-server/config.d/ipv4-only.xml
+      - clickhouse/low-resources.xml:/etc/clickhouse-server/config.d/low-resources.xml
+      # Plafonne ClickHouse à 50 % de la RAM (2 Go sur les 4 Go du VPS).
+      - clickhouse/memory-limits.xml:/etc/clickhouse-server/config.d/memory-limits.xml
+      # Les profils de settings se lisent depuis users.d, pas config.d.
+      - clickhouse/default-profile-low-resources-overrides.xml:/etc/clickhouse-server/users.d/default-profile-low-resources-overrides.xml
+    directories:
+      - data:/var/lib/clickhouse
+      - logs:/var/log/clickhouse-server
+    options:
+      ulimit: nofile=262144:262144
