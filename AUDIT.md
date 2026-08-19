@@ -9,34 +9,38 @@ Ce qui a pu être vérifié :
 - comparaison ligne à ligne du dépôt avec l'amont `plausible/community-edition` (historique complet cloné) ;
 - disponibilité réelle des images (`ghcr.io/plausible/community-edition`, `clickhouse/clickhouse-server`, `postgres`) interrogée directement sur les registries ;
 - validation des fichiers `compose.yml` / `compose.low-resources.yml` (`docker compose config`) et des XML ClickHouse ;
-- validation de `config/deploy.yml` avec Kamal 2.12.0 (`kamal config`), et inspection des commandes `docker run` que Kamal produit pour l'application et les deux accessoires ;
+- validation de `config/deploy.yml` + `config/deploy.analytics.yml` avec Kamal 2.12.0 (`kamal config -d analytics`), et inspection des commandes `docker run` que Kamal produit pour l'application et les deux accessoires ;
 - lecture du code de Plausible v3.2.1 (routes de health, gestion de `X-Forwarded-For`, conditions d'activation du TLS interne) et de kamal-proxy ;
 - notes de version amont v2.1.5 → v3.2.1 et commits de correctifs.
 
 Ce qui n'a **pas** pu être vérifié : l'exécution réelle des conteneurs (pas de démon Docker dans l'environnement d'audit) et l'état du VPS (logs, disque). Les causes de la panne sont donc classées par probabilité, avec pour chacune la commande de diagnostic qui tranche. Le §5 donne le bloc de commandes à lancer sur le VPS.
 
-**Machine cible : 2 vCPU / 4 Go de RAM.** C'est au-dessus des 2 Go recommandés en amont, ce qui rétrograde nettement l'hypothèse « OOM » et remonte les causes non liées à la mémoire. Classement des causes probables compte tenu de ces caractéristiques :
+**Machine cible : `akira`, 2 vCPU / 4 Go de RAM**, déploiement par **Kamal** depuis la branche `kamal` (§7). C'est au-dessus des 2 Go recommandés en amont, ce qui rétrograde nettement l'hypothèse « OOM ». Classement des causes probables :
 
 | Rang | Constat | Pourquoi |
 | --- | --- | --- |
-| 1 | **P2** — healthcheck ClickHouse trop serré | seule cause qui explique naturellement un basculement définitif « ça marchait / ça ne marche plus » sans changement de configuration ; dépend des I/O disque, pas de la RAM |
-| 2 | **P7** — disque saturé | logs Docker non bornés + images accumulées ; produit des échecs variés et durables |
-| 3 | **P6** — limites de pull Docker Hub | typiquement après plusieurs tentatives de redéploiement rapprochées |
-| 4 | **P1 + P3** — mémoire | reste un vrai bug de configuration, mais à 4 Go et 2 cœurs son effet est bien moindre : le profil non appliqué ne libérait que `max_threads` à 2 au lieu de 1 |
+| 1 | **K1** — kamal-proxy interroge `/up`, que Plausible n'expose pas | aucun `proxy/healthcheck` n'était défini : le proxy reçoit 404, ne bascule jamais, et le déploiement échoue en timeout quoi qu'il arrive. L'historique de la branche `kamal` (`5min timeout`, `remove timers`, `no cache warmup`, `try`, `retry`) est exactement le symptôme |
+| 2 | **P7** — disque saturé | logs Docker non bornés + images accumulées à chaque build ; produit des échecs variés et durables |
+| 3 | **P6** — limites de pull Docker Hub | pour Postgres et ClickHouse, typiquement après plusieurs tentatives rapprochées |
+| 4 | **P1 + P3** — mémoire | vrai bug de configuration, mais à 4 Go et 2 cœurs son effet est bien moindre : le profil non appliqué ne libérait que `max_threads` à 2 au lieu de 1 |
+
+P2 (healthcheck Docker Compose) ne concerne que l'usage local de `compose.yml` : la pile déployée n'utilise pas Compose.
 
 ## 2. État du dépôt
 
-| | Avant | Après |
+Le dépôt a deux histoires distinctes : la branche par défaut (`v2.1.4`), restée sur l'état amont de décembre 2024, et la branche **`kamal`**, qui est celle réellement déployée et avait déjà été partiellement remise à jour en novembre 2025.
+
+| | Branche `kamal` avant | Après cette fusion |
 | --- | --- | --- |
-| Base amont | état du 2024-12-09 (`c29a0f0`) | **v3.2.1** (2026-05-15) |
-| Image Plausible | `v2.1.4` (oct. 2024) | **`v3.2.1`** |
-| ClickHouse | `24.3.3.102-alpine` | **`24.12-alpine`** |
+| Image Plausible déployée (`Dockerfile`) | `v3.1.0` — **vulnérable à la CVE-2026-8467** | **`v3.2.1`** |
+| ClickHouse | `24.12-alpine` | `24.12-alpine` (inchangé) |
 | Postgres | `16-alpine` | `16-alpine` (inchangé, volontairement) |
 | Réglages « low resources » CH | présents mais **inactifs** | actifs (`users.d/`) |
-| `CLICKHOUSE_SKIP_USER_SETUP` | absent | présent |
-| Tweak local `ERL_FLAGS` | présent | **conservé** |
-
-Le fork n'avait pas divergé de l'amont autrement que par le commit `434ed81` (`ERL_FLAGS`), qui a été préservé.
+| Plafond mémoire ClickHouse | aucun (90 % de la RAM) | 50 % (2 Go sur 4) |
+| Healthcheck kamal-proxy | absent → `/up` → 404 | `/api/health` |
+| `readiness_delay` / `ELIXIR_APPLICATION_ENV` | présents mais **sans effet** | retirés |
+| `ERL_FLAGS`, `TMPDIR`, rotation des logs, `ulimit` CH | absents | ajoutés |
+| `compose.yml` (usage local) | `v3.1.0` | `v3.2.1` + correctif `users.d/` |
 
 ## 3. Constats
 
@@ -100,15 +104,25 @@ Le dépôt reste sur `postgres:16-alpine`, comme l'amont. Passer le tag à 17 ou
 
 ## 4. Ce qui a changé dans le dépôt
 
-- `config/deploy.yml` — **nouveau**, configuration Kamal 2 (voir §7).
-- `.kamal/secrets.example` — **nouveau**, modèle de fichier de secrets.
-- `compose.yml` — aligné sur l'amont v3.2.1 (images v3.2.1 + ClickHouse 24.12, `CLICKHOUSE_SKIP_USER_SETUP=1`, montage `users.d/`), avec `ERL_FLAGS` conservé.
+Sur le chemin de déploiement (branche `kamal`) :
+
+- `Dockerfile` — image amont **v3.1.0 → v3.2.1** (correctif de sécurité, P5) ; le `CMD` mal formé — trois chaînes en forme exec, dont seule la première aurait servi d'exécutable — est retiré, la commande venant de toute façon de `servers.web.cmd`.
+- `config/deploy.analytics.yml` — ajout du `proxy/healthcheck` sur `/api/health` (K1), de `HTTP_PORT`, `TMPDIR`, `ERL_FLAGS`, du volume `plausible-data`, de la rotation des logs, de l'`ulimit` ClickHouse et des deux nouveaux fichiers de configuration ClickHouse ; retrait de `readiness_delay` (K3), d'`ELIXIR_APPLICATION_ENV` (K4) et de `CLICKHOUSE_PASSWORD` (K9).
+- `config/deploy.yml` — conservé tel quel (destination, registre local, `builder/arch`), commentaires ajoutés.
+- `.kamal/secrets*` — inchangés (références Dashlane, aucune valeur en clair).
 - `clickhouse/default-profile-low-resources-overrides.xml` — **nouveau** (correctif P1).
 - `clickhouse/low-resources.xml` — réduit à `mark_cache_size`.
 - `clickhouse/memory-limits.xml` — **nouveau**, plafonne ClickHouse à 50 % de la RAM (2 Go sur 4).
+
+Pour l'évaluation locale :
+
+- `compose.yml` — aligné sur l'amont v3.2.1 (ClickHouse 24.12, `CLICKHOUSE_SKIP_USER_SETUP=1`, montage `users.d/`), `ERL_FLAGS` conservé.
 - `compose.low-resources.yml` — **nouveau**, surcouche opt-in (healthchecks, mémoire, logs).
-- `README.md` — version amont v3.2.1 + section « Notes de ce fork ».
-- `.gitignore` — nouveaux fichiers ajoutés à la liste blanche.
+
+Documentation :
+
+- `README.md` — version amont v3.2.1, organisation des branches, procédure Kamal.
+- `.gitignore` — refondu : les deux listes blanches (Kamal et ClickHouse) étaient incompatibles après fusion automatique et masquaient `config/deploy.analytics.yml` ainsi que les fichiers `.kamal/secrets*`.
 
 ## 5. Diagnostic à lancer sur le VPS
 
@@ -195,118 +209,117 @@ Si un `compose.override.yml` existe (exposition des ports 80/443), il est charg�
 
 ## 7. Déploiement avec Kamal
 
-Le déploiement cible est **Kamal 2** (validé ici avec la version 2.12.0 : `kamal config` passe et les commandes `docker run` produites ont été inspectées). `config/deploy.yml` décrit un rôle applicatif `web` et deux accessoires, `db` (Postgres) et `events-db` (ClickHouse), tous sur le réseau docker `kamal`, ce qui permet la résolution DNS par nom de conteneur (`plausible-db`, `plausible-events-db`).
+Le déploiement réel se fait depuis la branche **`kamal`**, avec Kamal 2 et une **destination** : `config/deploy.yml` porte la configuration commune, `config/deploy.analytics.yml` l'instance `analytics.foxtarget.com` (serveur `akira`, utilisateur SSH `deploy`).
 
-Les constats P1, P3, P4 à P9 du §3 restent valables tels quels. En revanche P2 (healthcheck Compose) et la surcouche `compose.low-resources.yml` ne s'appliquent pas : Kamal a ses propres mécanismes, avec ses propres pièges.
+Particularité de ce dépôt, et c'est un bon choix : l'image amont n'est pas tirée directement de ghcr.io. Le `Dockerfile` la réétiquette (`FROM ghcr.io/plausible/community-edition:<version>`) et Kamal la pousse via son **registre local** (`localhost:5555`, tunnel SSH). Deux corvées disparaissent du même coup — pas d'identifiants de registre à gérer, pas de `--version` à passer à chaque commande, puisque Kamal étiquette avec le SHA git. En contrepartie, **la version de Plausible se change dans le `Dockerfile`**, pas dans un fichier de configuration.
+
+Les constats P1, P3, P6 à P9 du §3 restent valables. P2 (healthcheck Compose) est remplacé par son équivalent Kamal, K1 ci-dessous.
+
+> [!IMPORTANT]
+> Le `Dockerfile` pointait sur **v3.1.0**, qui fait partie des versions vulnérables à l'exécution de code à distance via `/storybook` (CVE-2026-8467, voir P5). L'instance étant exposée publiquement, c'est le changement le plus urgent de cette fusion : le tag passe à **v3.2.1**.
 
 ### K1 — Le healthcheck par défaut de kamal-proxy échoue toujours
 
-kamal-proxy interroge **`/up`** par défaut. Plausible n'expose pas cette route : elle renvoie 404, le proxy ne bascule jamais le trafic, et **tous** les déploiements échouent en timeout. C'est l'équivalent Kamal du constat P2 — et la première chose à vérifier si un déploiement Kamal a échoué par le passé.
+C'est, de loin, l'explication la plus probable des déploiements qui n'aboutissent pas.
 
-Endpoints réellement disponibles :
+kamal-proxy interroge **`/up`** par défaut, et `config/deploy.analytics.yml` ne définissait aucun `proxy/healthcheck`. Plausible n'expose pas cette route : elle renvoie 404, le proxy ne bascule jamais le trafic, et le déploiement échoue en timeout — quelle que soit la santé réelle de l'application. L'historique de la branche (`5min timeout`, `remove timers`, `no cache warmup`, `try`, `retry`) est cohérent avec cette panne : le symptôme ressemble à une application lente à démarrer, alors que le proxy interroge simplement la mauvaise URL.
+
+Routes réellement exposées :
 
 | Route | Comportement |
 | --- | --- |
 | `/api/health` | 200 seulement si Postgres **et** ClickHouse **et** les caches **et** les sessions sont prêts |
-| `/api/system/health/live` | 200 dès que la VM répond (pas de vérification des bases) |
+| `/api/system/health/live` | 200 dès que la VM répond (aucune vérification des bases) |
 | `/api/system/health/ready` | identique à `/api/health` |
 
-`config/deploy.yml` utilise `/api/health` : c'est le bon choix, le trafic n'est basculé que sur une instance réellement fonctionnelle.
+La configuration utilise désormais `/api/health` : le trafic n'est basculé que sur une instance réellement fonctionnelle. Si un déploiement devait échouer alors que l'application tourne, `/api/system/health/live` est le repli — mais il ne garantit rien sur les bases.
 
-### K2 — `deploy_timeout` par défaut (30 s) contre une migration v2 → v3
+### K2 — `deploy_timeout` : déjà correct
 
-La commande du conteneur enchaîne `db createdb`, `db migrate` puis `run` : le port n'est ouvert qu'une fois les migrations terminées, ce qui peut prendre plusieurs minutes sur un petit VPS. Avec les 30 s par défaut, Kamal abandonne avant. Le fichier fixe `deploy_timeout: 900`.
+Le conteneur enchaîne `db createdb`, `db migrate` puis `run` : le port ne s'ouvre qu'à la fin. Les 30 s par défaut ne suffisent pas. `deploy_timeout: 600` était déjà en place et a été conservé.
 
-### K3 — `--version` est obligatoire
+### K3 — `readiness_delay: 600` ne servait à rien
 
-On déploie une image amont, sans build local. Kamal doit donc être appelé avec `-P` (skip build & push) **et** `--version` :
+Ce réglage ne s'applique qu'aux conteneurs **qui ne sont pas derrière le proxy et qui ne déclarent pas de healthcheck**. Le rôle `web` étant proxifié, Kamal l'ignore purement et simplement : il n'a jamais rallongé quoi que ce soit. Retiré, pour ne pas laisser croire qu'un délai de 10 minutes est en place.
 
-```sh
-kamal setup  -P --version=v3.2.1   # première installation
-kamal deploy -P --version=v3.2.1   # mises à jour
-```
+### K4 — `ELIXIR_APPLICATION_ENV` n'existe pas
 
-Sans `--version`, Kamal prend le SHA git de *ce dépôt* comme tag d'image ; ce tag n'existe pas sur ghcr.io et le `docker pull` échoue sur le serveur. C'est aussi ce tag qui sert de nom de conteneur (`plausible-web-v3.2.1`) et de cible de `kamal rollback`.
+La variable `ELIXIR_APPLICATION_ENV: ":plausible, Plausible.Cache, enabled: false"` a été retirée : **aucune occurrence dans le code de Plausible v3.2.1** (vérifié sur l'ensemble du dépôt amont). Elle n'a donc jamais désactivé le cache — Elixir ne dispose d'aucun mécanisme générique de ce genre, et `Plausible.Cache`/`enabled` n'est réglable que par fichier de configuration, à la compilation (c'est ce que fait `config/test.exs`).
 
-### K4 — Identifiants de registre exigés même pour une image publique
-
-`ghcr.io/plausible/community-edition` est public, mais la validation Kamal impose `registry/username` et `registry/password` dès que le serveur n'est pas `localhost`. Un PAT GitHub avec le seul scope `read:packages` suffit ; il se déclare dans `.kamal/secrets` sous `KAMAL_REGISTRY_PASSWORD`. De même, `builder/arch` doit être renseigné alors que rien n'est construit (`amd64`, ou `arm64` si le VPS est ARM), sinon la configuration est refusée au chargement.
+C'est une bonne nouvelle : si elle avait fonctionné, elle aurait **définitivement cassé** `/api/health`, qui exige que les caches critiques soient prêts pour renvoyer 200 — et donc rendu tout déploiement impossible via K1.
 
 ### K5 — TLS : un seul terminateur
 
-kamal-proxy occupe les ports **80 et 443** et gère Let's Encrypt (`proxy/ssl: true`). Il faut donc :
+kamal-proxy occupe les ports **80 et 443** et gère Let's Encrypt (`proxy/ssl: true`). Donc :
 
-- **ne pas définir `HTTPS_PORT`** — cette variable est le seul déclencheur du Let's Encrypt interne de Plausible ; définie, elle ferait démarrer un second serveur ACME en conflit avec le proxy ;
-- définir `HTTP_PORT: "8000"` et `proxy/app_port: 8000` ;
-- garder `BASE_URL` en `https://…` (c'est lui qui détermine le cookie `secure`) ;
-- **arrêter l'ancienne pile Compose avant le premier `kamal setup`**, sinon les ports 80/443 sont déjà pris et l'émission du certificat échoue.
-
-Sans `HTTPS_PORT`, la redirection HTTPS interne de Plausible reste désactivée : pas de risque de boucle de redirection derrière le proxy.
+- **ne pas définir `HTTPS_PORT`** — c'est le seul déclencheur du Let's Encrypt interne de Plausible ; définie, elle ferait démarrer un second serveur ACME en conflit avec le proxy. Sans elle, la redirection HTTPS interne reste désactivée : pas de risque de boucle de redirection ;
+- `HTTP_PORT: "8000"` est désormais explicite, en accord avec `proxy/app_port: 8000` (Plausible écoute sur 8000 par défaut, ce qui marchait par coïncidence) ;
+- `BASE_URL` reste en `https://…` : c'est lui qui détermine le cookie `secure`.
 
 ### K6 — Ne pas activer `forward_headers`
 
-Plausible détermine l'IP du visiteur en prenant la **première** valeur de `X-Forwarded-For`. Avec `ssl: true`, kamal-proxy réécrit cet en-tête avec l'IP réelle du client : c'est le comportement voulu. Activer `forward_headers: true` lui ferait au contraire conserver l'en-tête envoyé par le client, qui passerait alors en première position — n'importe quel visiteur pourrait falsifier son IP, donc son pays, dans les statistiques. À laisser désactivé tant que rien d'autre (Cloudflare, un autre proxy) n'est placé devant.
+Plausible détermine l'IP du visiteur en prenant la **première** valeur de `X-Forwarded-For`. Avec `ssl: true`, kamal-proxy réécrit cet en-tête avec l'IP réelle du client : c'est le comportement voulu. Activer `forward_headers: true` lui ferait conserver l'en-tête envoyé par le client, qui passerait alors en première position — n'importe quel visiteur pourrait falsifier son IP, donc son pays, dans les statistiques. À laisser désactivé tant que rien d'autre (Cloudflare, un autre proxy) n'est placé devant.
 
 ### K7 — Les accessoires ne sont pas gérés par `kamal deploy`
 
 Deux conséquences pratiques :
 
-- **Modifier un fichier `clickhouse/*.xml` n'a aucun effet sur un simple `kamal deploy`.** Les fichiers déclarés sous `files:` sont téléversés au boot de l'accessoire ; il faut `kamal accessory reboot events-db` (arrêt/redémarrage du conteneur, donc courte interruption).
-- **Aucun ordonnancement ni healthcheck entre accessoires et application.** Au tout premier démarrage, l'application peut boucler en redémarrages tant que ClickHouse n'est pas prêt ; c'est normal et sans gravité, `deploy_timeout` laisse le temps. Pour éviter le bruit, booter les accessoires d'abord :
+- **Modifier un fichier `clickhouse/*.xml` n'a aucun effet sur un simple `kamal deploy`.** Les fichiers déclarés sous `files:` sont téléversés au boot de l'accessoire ; il faut `kamal accessory reboot events-db -d analytics`. C'est indispensable pour que le correctif P1 (profil dans `users.d`) prenne effet.
+- **Aucun ordonnancement ni healthcheck entre accessoires et application.** Au premier démarrage, l'application peut boucler en redémarrages tant que ClickHouse n'est pas prêt ; `deploy_timeout` laisse le temps que ça se stabilise.
+
+### K8 — Où sont les données
+
+Kamal ne crée pas de volumes docker nommés pour les accessoires : il monte des répertoires du serveur, relatifs au répertoire de connexion SSH — ici l'utilisateur `deploy`, donc `/home/deploy` :
+
+| Donnée | Emplacement sur `akira` |
+| --- | --- |
+| Postgres | `/home/deploy/plausible-db/db-data` |
+| ClickHouse | `/home/deploy/plausible-events-db/event-data` |
+| Logs ClickHouse | `/home/deploy/plausible-events-db/event-logs` |
+| Config ClickHouse | `/home/deploy/plausible-events-db/etc/clickhouse-server/…` |
+| Données Plausible | volume docker `plausible-data` |
+
+Les deux bases publient un port sur la boucle locale (`127.0.0.1:5432`, `127.0.0.1:8123`), ce qui rend les sauvegardes simples depuis le serveur :
 
 ```sh
-kamal accessory boot all
-kamal accessory logs events-db --follow   # attendre "Ready for connections"
-kamal deploy -P --version=v3.2.1
+pg_dump -h 127.0.0.1 -U postgres -d plausible_db | gzip > plausible-pg-$(date +%F).sql.gz
 ```
 
-### K8 — Les données ne sont plus au même endroit qu'avec Compose
+Sauvegarder **avant** le passage en v3.2.1 : le retour arrière d'une migration Plausible n'est pas supporté.
 
-Kamal ne crée pas de volumes docker nommés pour les accessoires : il monte des répertoires du serveur, relatifs au répertoire de connexion SSH (`$PWD`, typiquement `/root`) :
+### K9 — Incohérence sur le mot de passe Postgres
 
-| Donnée | Compose | Kamal |
-| --- | --- | --- |
-| Postgres | volume `plausible-ce_db-data` | `~/plausible-db/data` |
-| ClickHouse | volume `plausible-ce_event-data` | `~/plausible-events-db/data` |
-| Logs ClickHouse | volume `plausible-ce_event-logs` | `~/plausible-events-db/logs` |
-| Config ClickHouse | bind depuis le dépôt | `~/plausible-events-db/etc/clickhouse-server/…` |
-| Données Plausible (certs, tmp) | volume `plausible-ce_plausible-data` | volume `plausible-data` (déclaré dans `volumes:`) |
+`DATABASE_URL` se connecte avec le mot de passe littéral `postgres`, alors que l'accessoire `db` reçoit un `POSTGRES_PASSWORD` issu de Dashlane. Si la connexion fonctionne, c'est que le volume a été initialisé avec `postgres` : l'image Postgres n'applique `POSTGRES_PASSWORD` qu'à la **première** initialisation, et l'ignore ensuite.
 
-**Migrer une installation Compose existante ne se fait donc pas tout seul.** Le plus sûr, pour Postgres, est un dump/restore ; pour ClickHouse, une copie du contenu du volume, propriétaire rétabli :
+**Rien n'a été changé ici** — aligner les deux au mauvais moment couperait l'accès à la base. Pour le faire proprement, plus tard et en connaissance de cause :
 
 ```sh
-# Postgres : dump depuis l'ancienne pile
-docker compose exec -T plausible_db pg_dump -U postgres -d plausible_db | gzip > pg.sql.gz
-
-# ClickHouse : copie du volume vers l'emplacement attendu par Kamal
-docker compose down
-docker run --rm -v plausible-ce_event-data:/from:ro -v /root/plausible-events-db/data:/to \
-  alpine sh -c 'cp -a /from/. /to/'
-docker run --rm -v /root/plausible-events-db/data:/data alpine \
-  sh -c 'chown -R 101:101 /data'   # vérifier l'UID réel : docker run --rm clickhouse/clickhouse-server:24.12-alpine id clickhouse
-
-# puis, après kamal setup, restaurer Postgres
-gunzip -c pg.sql.gz | kamal accessory exec db -i --reuse "psql -U postgres -d plausible_db"
+# 1. changer le mot de passe dans Postgres
+kamal accessory exec db -i --reuse -d analytics \
+  "psql -U postgres -c \"ALTER USER postgres PASSWORD '<le mot de passe Dashlane>'\""
+# 2. puis basculer DATABASE_URL en secret, comme SECRET_KEY_BASE
 ```
 
-Tester d'abord sur une copie : une restauration ClickHouse ratée est bien plus coûteuse qu'un dump refait.
+Tant que ce n'est pas fait, le `POSTGRES_PASSWORD` de Dashlane ne protège rien. Le port n'étant publié que sur `127.0.0.1`, l'exposition reste limitée aux comptes du serveur.
 
-### K9 — Ce que Kamal ajoute sur un VPS déjà juste
+À noter dans le même esprit : `CLICKHOUSE_PASSWORD` a été retiré de l'accessoire `events-db`. Avec `CLICKHOUSE_SKIP_USER_SETUP=1`, l'entrypoint de l'image ne configure aucun utilisateur, la variable n'avait donc aucun effet — et `CLICKHOUSE_DATABASE_URL` ne porte de toute façon pas de mot de passe.
 
-kamal-proxy est un conteneur Go supplémentaire (empreinte faible, quelques dizaines de Mo) et Kamal conserve l'ancien conteneur applicatif le temps du basculement : pendant un déploiement, **deux instances de Plausible tournent brièvement en parallèle**. C'est le pic de consommation du cycle de vie, et il se cumule avec les migrations. Avec 4 Go et ClickHouse plafonné à 2 Go, ça passe ; c'est la raison principale de garder du swap.
+### K10 — Ce que Kamal ajoute en consommation
+
+kamal-proxy est un conteneur Go supplémentaire (empreinte faible) et Kamal conserve l'ancien conteneur applicatif le temps du basculement : pendant un déploiement, **deux instances de Plausible tournent brièvement en parallèle**. C'est le pic de consommation du cycle de vie, et il se cumule avec les migrations. Avec 4 Go et ClickHouse plafonné à 2 Go, ça passe ; c'est la raison principale de garder du swap.
 
 ### Aide-mémoire
 
 ```sh
-kamal setup  -P --version=v3.2.1      # bootstrap serveur + accessoires + déploiement
-kamal deploy -P --version=v3.2.1      # déploiement suivant
-kamal app logs --follow               # logs applicatifs
-kamal accessory logs events-db -f     # logs ClickHouse
-kamal accessory reboot events-db      # après modification des XML ClickHouse
-kamal app exec -i --reuse "/entrypoint.sh db migrate"
-kamal rollback v3.1.0                 # bascule sur un conteneur encore présent
-kamal proxy logs --follow             # diagnostic TLS / routage
+kamal deploy -d analytics                        # déploiement
+kamal app logs -f -d analytics                   # logs applicatifs
+kamal accessory logs events-db -f -d analytics   # logs ClickHouse
+kamal accessory reboot events-db -d analytics    # après modification des XML
+kamal proxy logs -f -d analytics                 # healthcheck, TLS, routage
+kamal app details -d analytics                   # conteneurs et versions en place
+kamal rollback <sha> -d analytics                # bascule sur un conteneur encore présent
 ```
+
 
 ## 8. Points restés ouverts
 

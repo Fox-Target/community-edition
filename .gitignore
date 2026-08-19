@@ -1,6 +1,17 @@
 *
+
+# Kamal. Les fichiers .kamal/secrets* sont suivis volontairement : ils ne
+# contiennent que des références à Dashlane (dcli), jamais de valeur en clair.
+!.kamal
+!.kamal/*
+!config
+!config/*.yml
+!Dockerfile
+
+# Docker Compose (évaluation locale)
 !compose.yml
 !compose.low-resources.yml
+
 # un répertoire doit être désexclu avant de pouvoir y réinclure des fichiers
 !clickhouse/
 clickhouse/*
@@ -9,13 +20,7 @@ clickhouse/*
 !clickhouse/low-resources.xml
 !clickhouse/default-profile-low-resources-overrides.xml
 !clickhouse/memory-limits.xml
-!config/
-config/*
-!config/deploy.yml
-!.kamal/
-.kamal/*
-# .kamal/secrets contient les vrais secrets : il reste ignoré
-!.kamal/secrets.example
+
 !README.md
 !AUDIT.md
 !LICENSE

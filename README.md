@@ -28,11 +28,15 @@ Cloning into 'plausible-ce'...
 
 $ cd plausible-ce
 
+$ git checkout kamal
+
 $ ls -1
 AUDIT.md
 clickhouse/
 compose.low-resources.yml
 compose.yml
+config/
+Dockerfile
 LICENSE
 README.md
 ```
@@ -95,62 +99,64 @@ Ce dépôt suit [plausible/community-edition](https://github.com/plausible/commu
 
 | Ajout | Rôle |
 | --- | --- |
-| `config/deploy.yml` + `.kamal/secrets.example` | déploiement avec **Kamal 2** (voir ci-dessous) |
+| `Dockerfile`, `config/deploy*.yml`, `.kamal/secrets*` | déploiement avec **Kamal 2** (voir ci-dessous) |
 | `ERL_FLAGS=+sbwt none +sbwtdcpu none +sbwtdio none` | désactive l'attente active de la VM Erlang, réduit la conso CPU au repos |
-| `compose.low-resources.yml` | surcouche **optionnelle** pour petit VPS : healthchecks tolérants, plafond mémoire ClickHouse, rotation des logs Docker |
+| `clickhouse/default-profile-low-resources-overrides.xml` | correctif amont : sans lui, les réglages « low resources » sont ignorés |
 | `clickhouse/memory-limits.xml` | plafonne ClickHouse à 50 % de la RAM, pour laisser de la place aux autres services |
+| `compose.low-resources.yml` | surcouche **optionnelle** pour l'évaluation locale : healthchecks tolérants, rotation des logs |
 | [`AUDIT.md`](AUDIT.md) | audit du déploiement : causes probables d'échec, diagnostic, procédures |
 
-Sur un VPS peu doté, démarrer avec la surcouche :
+### Organisation des branches
+
+Ce dépôt est un fork de [plausible/community-edition](https://github.com/plausible/community-edition), où **chaque version amont est une branche**. Le flux est le suivant :
+
+1. synchroniser le fork avec l'amont (les branches `v3.2.1`, `v3.1.0`, …) ;
+2. fusionner la branche de version voulue dans **`kamal`** ;
+3. `kamal` est la branche déployée — c'est la seule qui porte le `Dockerfile`, `config/deploy*.yml` et les secrets.
+
+Toute modification liée au déploiement va donc dans `kamal`, pas dans la branche par défaut.
+
+### Déploiement avec Kamal
+
+Le déploiement utilise [Kamal 2](https://kamal-deploy.org) avec une **destination** (`require_destination: true`) : la configuration commune est dans `config/deploy.yml`, celle de l'instance dans `config/deploy.analytics.yml`.
+
+```console
+$ kamal deploy -d analytics
+```
+
+L'image amont n'est pas tirée directement : le `Dockerfile` la réétiquette et Kamal la pousse par son **registre local** (`localhost:5555`, tunnel SSH vers le serveur). C'est ce qui évite d'avoir à gérer des identifiants de registre et à passer `--version` à chaque déploiement. Changer de version de Plausible = changer le tag dans le `Dockerfile`.
+
+Les secrets sont lus depuis Dashlane via `dcli` au moment du déploiement (`.kamal/secrets.analytics`) : aucune valeur en clair n'est stockée dans le dépôt.
+
+> [!IMPORTANT]
+> Après modification d'un fichier `clickhouse/*.xml`, un `kamal deploy` ne suffit pas : les accessoires ne sont pas retouchés par un déploiement. Il faut `kamal accessory reboot events-db -d analytics`.
+
+Commandes utiles :
+
+```console
+$ kamal app logs -f -d analytics             # logs applicatifs
+$ kamal accessory logs events-db -f -d analytics
+$ kamal proxy logs -f -d analytics           # échecs de healthcheck, TLS, routage
+$ kamal app details -d analytics             # conteneurs et versions en place
+```
+
+Le détail des pièges rencontrés est dans [`AUDIT.md` § 7](AUDIT.md).
+
+### Évaluation locale
+
+`compose.yml` reste utilisable tel quel pour essayer une version avant de la déployer, éventuellement avec la surcouche petite configuration :
 
 ```console
 $ docker compose -f compose.yml -f compose.low-resources.yml up -d
 ```
 
-### Déploiement avec Kamal
-
-Le déploiement cible est [Kamal 2](https://kamal-deploy.org). Les étapes en quatre points — le détail des pièges est dans [`AUDIT.md` § 7](AUDIT.md).
-
-1. Renseigner les valeurs `CHANGEME` de `config/deploy.yml` : IP du VPS (trois fois), domaine, login GitHub.
-
-2. Créer le fichier de secrets, qui reste hors de git :
-
-    ```console
-    $ cp .kamal/secrets.example .kamal/secrets
-    $ export KAMAL_REGISTRY_PASSWORD=...   # PAT GitHub, scope read:packages
-    $ export SECRET_KEY_BASE=$(openssl rand -base64 48)
-    $ export POSTGRES_PASSWORD=$(openssl rand -base64 24)
-    ```
-
-3. Première installation — les ports 80 et 443 du VPS doivent être libres :
-
-    ```console
-    $ kamal setup -P --version=v3.2.1
-    ```
-
-4. Mises à jour ultérieures :
-
-    ```console
-    $ kamal deploy -P --version=v3.2.1
-    ```
-
-> [!IMPORTANT]
-> `-P` et `--version` sont obligatoires : l'image est celle publiée par Plausible, rien n'est construit ici. Sans `--version`, Kamal cherche un tag correspondant au SHA git de ce dépôt, qui n'existe pas sur ghcr.io.
-
-Après modification d'un fichier `clickhouse/*.xml`, un `kamal deploy` ne suffit pas — il faut redémarrer l'accessoire :
-
-```console
-$ kamal accessory reboot events-db
-```
-
-Le fichier `compose.yml` reste utilisable tel quel, notamment pour évaluer une version en local avant de la déployer.
-
-Pour resynchroniser avec l'amont :
+### Resynchroniser avec l'amont
 
 ```console
 $ git remote add upstream https://github.com/plausible/community-edition
 $ git fetch upstream
-$ git merge upstream/master
+$ git checkout kamal
+$ git merge v3.2.1        # branche de version déjà synchronisée depuis l'amont
 ```
 
 ### Wiki
