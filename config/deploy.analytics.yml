@@ -16,18 +16,50 @@ proxy:
   ssl: true
   host: analytics.foxtarget.com
   app_port: 8000
+  # Sans ce chemin, kamal-proxy interroge /up — que Plausible n'expose pas :
+  # il reçoit 404, ne bascule jamais le trafic, et le déploiement échoue en
+  # timeout à tous les coups. /api/health ne répond 200 que si Postgres,
+  # ClickHouse et les caches sont prêts.
+  healthcheck:
+    path: /api/health
+    interval: 5
+    timeout: 5
+  # Ne PAS activer forward_headers : avec ssl: true, kamal-proxy réécrit
+  # X-Forwarded-For avec l'IP réelle du client, ce dont Plausible a besoin (il
+  # lit la première valeur de l'en-tête). L'activer laisserait un visiteur
+  # falsifier son IP, donc son pays, via un en-tête forgé.
 
 env:
   clear:
     BASE_URL: https://analytics.foxtarget.com
-    DATABASE_URL: postgres://postgres:postgres@plausible-db:5432/plausible_db
+    # Ne surtout PAS définir HTTPS_PORT : cela réactiverait le Let's Encrypt
+    # interne de Plausible, en conflit avec kamal-proxy.
+    HTTP_PORT: "8000"
+    TMPDIR: /var/lib/plausible/tmp
+    # Désactive l'attente active de la VM Erlang (CPU au repos).
+    ERL_FLAGS: "+sbwt none +sbwtdcpu none +sbwtdio none"
     CLICKHOUSE_DATABASE_URL: http://plausible-events-db:8123/plausible_events_db
-    ELIXIR_APPLICATION_ENV: ":plausible, Plausible.Cache, enabled: false"
   secret:
     - SECRET_KEY_BASE
+    # Assemblée dans .kamal/secrets.analytics à partir de POSTGRES_PASSWORD :
+    # le mot de passe ne vit qu'à un seul endroit.
+    - DATABASE_URL
 
-readiness_delay: 600
+# Le conteneur enchaîne createdb, migrations puis démarrage : le port ne s'ouvre
+# qu'à la fin. kamal-proxy attend au plus deploy_timeout que /api/health réponde
+# 200 (30 s par défaut, insuffisant pour une migration).
 deploy_timeout: 600
+drain_timeout: 30
+
+volumes:
+  - "plausible-data:/var/lib/plausible"
+
+# S'applique aussi aux accessoires : évite de saturer le disque du serveur.
+logging:
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: 3
 
 accessories:
   db:
@@ -48,9 +80,9 @@ accessories:
     port: "127.0.0.1:8123:8123"
     env:
       clear:
+        # Empêche l'entrypoint de l'image de réécrire la configuration
+        # utilisateur, ce qui annulerait le profil monté dans users.d.
         CLICKHOUSE_SKIP_USER_SETUP: 1
-      secret:
-        - CLICKHOUSE_PASSWORD
     directories:
       - event-data:/var/lib/clickhouse
       - event-logs:/var/log/clickhouse-server
@@ -58,3 +90,10 @@ accessories:
       - ./clickhouse/logs.xml:/etc/clickhouse-server/config.d/logs.xml:ro
       - ./clickhouse/ipv4-only.xml:/etc/clickhouse-server/config.d/ipv4-only.xml:ro
       - ./clickhouse/low-resources.xml:/etc/clickhouse-server/config.d/low-resources.xml:ro
+      # Plafonne ClickHouse à 50 % de la RAM (2 Go sur les 4 Go du serveur).
+      - ./clickhouse/memory-limits.xml:/etc/clickhouse-server/config.d/memory-limits.xml:ro
+      # Les profils de settings se lisent depuis users.d, pas config.d : sans ce
+      # montage, max_threads & co. sont silencieusement ignorés.
+      - ./clickhouse/default-profile-low-resources-overrides.xml:/etc/clickhouse-server/users.d/default-profile-low-resources-overrides.xml:ro
+    options:
+      ulimit: nofile=262144:262144

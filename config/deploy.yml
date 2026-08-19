@@ -1,3 +1,14 @@
+# Configuration Kamal commune à toutes les destinations.
+#
+# Le déploiement se fait toujours avec une destination (`require_destination`),
+# c'est-à-dire un fichier config/deploy.<destination>.yml :
+#
+#   kamal deploy -d analytics
+#
+# L'image n'est pas tirée directement de ghcr.io : le Dockerfile à la racine
+# réétiquette l'image amont, et Kamal la pousse via son registre local (tunnel
+# SSH vers le serveur). C'est ce qui évite d'avoir à gérer des identifiants de
+# registre et de passer `--version` à la main à chaque déploiement.
 require_destination: true
 
 registry:
