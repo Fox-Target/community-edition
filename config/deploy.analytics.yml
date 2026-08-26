@@ -44,6 +44,8 @@ env:
     # Assemblée dans .kamal/secrets.analytics à partir de POSTGRES_PASSWORD :
     # le mot de passe ne vit qu'à un seul endroit.
     - DATABASE_URL
+    - GOOGLE_CLIENT_ID
+    - GOOGLE_CLIENT_SECRET
 
 # Le conteneur enchaîne createdb, migrations puis démarrage : le port ne s'ouvre
 # qu'à la fin. kamal-proxy attend au plus deploy_timeout que /api/health réponde
